@@ -129,4 +129,4 @@ packetHandler.write1ByteTxRx(portHandler, DXL_ID_1, TORQUE_ENABLE_ADDRESS, TORQU
 packetHandler.write1ByteTxRx(portHandler, DXL_ID_2, TORQUE_ENABLE_ADDRESS, TORQUE_OFF)
 
 portHandler.closePort()
-print("Done, Torque is turnt the fuck off, port is closed")
+print("Torque disabled, port closed")

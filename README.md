@@ -1,115 +1,137 @@
-# Head Pitch & Yaw Control
+# Humanoid neck — two-motor differential pitch and yaw
 
-The head is driven by **two Dynamixel motors** to control **pitch (nodding)** and **yaw (spinning)**.
+**Two Dynamixel servos drive one 2-DOF head: they spin the same way and the head yaws, they spin
+opposite ways and it nods.** This is the bench code I wrote to drive that mechanism over a U2D2 from a
+laptop, one command at a time from the terminal.
 
-### Motion intuition
-If you look from the top:
-- If the motors spin **away/towards each other**, the head **nods (pitch)**.
-- If the motors spin **in the same direction**, the head **spins (yaw)**.
+It is a lab script, not a library. There is no trajectory planner, no ROS node and no test suite; it is
+the thing I used to prove the mechanism and the differential mapping worked before the neck went on the
+robot.
 
-This script sets up both motors (operating mode, accel/velocity), captures the current pose as the "center", then asks the user for yaw/pitch angles and sync-writes both motors.
+## How the differential works
 
----
+Hold the head in your hands and look down the axis:
 
-## Steps to move the head
-1. Ensure both Dynamixels are mounted to the head mechanism
-2. Daisy-chain the motors together (Motor 1 ↔ Motor 2)
-3. Connect Motor 1 to the U2D2
-4. Connect the U2D2 to computer/Jetson
-5. Run the code
+| Motor 1 | Motor 2 | Head does |
+| --- | --- | --- |
+| turns +θ | turns +θ | **yaws** by θ (spins left/right) |
+| turns +θ | turns −θ | **pitch** by θ (nods up/down) |
 
----
+So every command is decomposed into two motor goals:
 
-## Code explanation and what not
-
-## Setup
-1. Ensure python3 is installed  
-   https://www.python.org/downloads/
-
-2. Download Dynamixel SDK (source code from github)
+```python
+goal1 = center1 + yaw_ticks + pitch_ticks
+goal2 = center2 + yaw_ticks - pitch_ticks
 ```
-git clone https://github.com/ROBOTIS-GIT/DynamixelSDK.git
+
+That is `yaw_pitch_control_and_send()` in `initialize.py`. The two motors are written in one
+`GroupSyncWrite` packet so they start on the same bus frame — writing them one after the other makes the
+head twitch between the two commands.
+
+**Draw the sign convention on the bench before you command anything.** The mapping above is what the
+mechanism does with the current gear train; if you flip a motor's direction, yaw and pitch swap.
+
+## Hardware
+
+| Item | What I used |
+| --- | --- |
+| Servos | 2 × Dynamixel, Protocol 2.0, 4-byte goal position (XM/XH series control table) |
+| IDs | `DXL_ID_1 = 1`, `DXL_ID_2 = 2` |
+| Interface | U2D2, daisy-chained: motor 1 ↔ motor 2, motor 1 → U2D2 |
+| Gears | 23-tooth pinion on each motor into a 40-tooth gear (ratio 1.739) |
+| Baud | 57600 |
+| Port | `COM4` on my machine — change it |
+
+## Wiring
+
+1. Mount both servos into the head mechanism.
+2. Daisy-chain the two servos.
+3. Connect servo 1 to the U2D2, U2D2 to the laptop.
+4. Power the servos from their own supply, not from the U2D2's USB rail.
+
+## Run it
+
+```bash
+pip install dynamixel-sdk          # or: git clone https://github.com/ROBOTIS-GIT/DynamixelSDK.git
+                                   #     cd DynamixelSDK/python && pip install .
+python basicNeck.py
 ```
-3. Build and install the SDK
 
-- Open the `{Dynamixel_SDK}/python` folder  
-- Open a terminal in that folder  
-- Run:
+The script then:
+
+1. opens the port at 57600 and reports success or exits,
+2. reads the operating mode of both servos,
+3. **asks you for the operating mode** — enter `4` (Extended Position Control). This is interactive
+   because I wanted the other modes reachable without editing the file; answer `4` unless you have a
+   reason not to,
+4. turns torque off, sets mode, profile acceleration and profile velocity, turns torque on,
+5. reads both servos' present position and calls that the **centre** — so `0 0` means "stay where you
+   are", not "go to a fixed home",
+6. prompts `yaw pitch >` in degrees, and keeps prompting until you type `q`,
+7. on exit, disables torque on both servos and closes the port.
+
+```text
+yaw pitch > 30 0      # yaw 30° left/right
+yaw pitch > 0 -15     # nod 15° down
+yaw pitch > 20 10     # both at once
+yaw pitch > q
 ```
-pip install .
-```
-- Verify installation 
-```
-pip show dynamixel_sdk .
-``` 
-## head_pitch_yaw_control.py
-This script controls two Dynamixels that together drive the head pitch and yaw.
-When you run 
-``` 
-python head_pitch_yaw_control.py
-```
-- Opens the port and sets baudrate
-- Reads operating modes of both motors
-- Disables torque to allow configuration
-- Sets operating mode (typically Extended Position Control)
-- Sets acceleration and velocity profiles
-- Enables torque
-- Reads the current motor positions and treats them as the center pose
-- Asks for yaw and pitch angles in degrees
-- Converts angles into motor ticks
-- Uses SyncWrite to move both motors simultaneously
-- Disables torque and closes the port on exit
 
-## Explanation
-At the top we imported 
-- dynamixel.sdk
-- initialize.py (helper functions used throughout the script)
+Torque is left **off** while the prompt is open between commands (the goal registers hold, the servos
+hold position only while energised), so support the head if it is not counterbalanced.
 
-Communication is done by sending instruction packets (Tx) and receiving status packets (Rx) via the U2D2
+## Knobs
 
-## Constants
-### Control table addresses
-Used to read/write data to the motors
-Addresses can be found in the Dynamixel control table or via Dynamixel Wizard 2.0
+Everything worth changing is a module constant at the top of `basicNeck.py`:
 
-### Dynamixel IDs
-- DXL_ID_1 = 1
-- DXL_ID_2 = 2
+| Constant | File | Default | What it does |
+| --- | --- | --- | --- |
+| `DXL_ID_1`, `DXL_ID_2` | `basicNeck.py` | 1, 2 | servo IDs |
+| `BAUDRATE` | `basicNeck.py` | 57600 | bus speed; must match both servos |
+| `DEVICENAME` | `basicNeck.py` | `"COM4"` | serial port (`/dev/ttyUSB0` on Linux) |
+| `TEETH_SMALL`, `TEETH_LARGE` | `basicNeck.py` | 23, 40 | gear teeth; sets `GEAR_RATIO` |
+| `PROFILE_ACCELERATION` | `basicNeck.py` | 20 | ramp-up; higher accelerates harder |
+| `PROFILE_VELOCITY` | `basicNeck.py` | 200 | cruise speed; higher is faster |
+| `COUNTS_PER_TURN` | `basicNeck.py` | 4096.0 | encoder counts per motor revolution |
 
-Both motors: 
-- Use protocol 2.0
-- Are on the same bus
+Degrees → motor counts is `angle × GEAR_RATIO × COUNTS_PER_DEGREE`; at the defaults one head degree is
+about 19.8 counts, so the smallest command the mechanism can resolve is well under a tenth of a degree.
 
-### Communication settings 
-- Baudrate = 57600
-- DEVICENAME = "COM4"
+## Troubleshooting (errors I actually hit)
 
-### Motion Parameters
-- PROFILE_ACCELERATION
-- PROFILE_VELOCITY
-Higher values increase responsiveness but may stress the mechanism
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `failed to open the port` | wrong `DEVICENAME`, or the U2D2 is not enumerated | check Device Manager for the COM number; on Linux `ls /dev/ttyUSB*` |
+| `Failed to change the baudrate` | servo baud ≠ `BAUDRATE` | set both servos to 57600 in Dynamixel Wizard |
+| `[TxRxResult] There is no status packet!` | daisy chain reversed, or only one servo powered | servo 1 → U2D2, servo 2 chained off servo 1 |
+| head snaps to a random pose on start | you answered `0 0` expecting a home pose | `0 0` holds the pose at launch; a centre is captured, not commanded |
+| head twitches between two poses | goals written separately | use the sync write; do not add a second `write4ByteTxRx` in the loop |
+| servos go slack | torque is off on exit | expected: the script disables torque before closing the port |
 
-### Gear constants
-- TEETH_SMALL
-- TEETH_LARGE
-- GEAR_RATIO = TEETH_LARGE / TEETH_SMALL
-Used to convert head angles into motor angles correctly
+## Status
 
-### Angle mapping constants
-- COUNTS_PER_TURN
-- COUNTS_PER_DEGREE
-Used to convert degrees into raw Dynamixel ticks
+Worked on the bench with both servos and the head mechanism. Not tested on the assembled robot, no
+motion smoothing, no limits check — commanding a large yaw from an extreme pose will drive a servo into
+its mechanical stop. Add soft limits before this runs unattended.
 
-### Control logic (high level)
-1. Open port and set baudrate
-2. Create port and packet handlers
-3. Create SyncWrite group
-4. Read operating modes
-5. Disable torque
-6. Set operating mode
-7. Set acceleration and velocity
-8. Enable torque
-9. Capture current positions as center pose
-10. Ask user for yaw and pitch
-11. Convert angles → motor ticks
-12. Sync-write goal positions
+<!-- TODO(owner): the README has no photo of the mechanism. Add one photo of the assembled head (servos,
+gears and U2D2 visible) to docs/screenshots/, then reference it here. -->
+
+## Files
+
+| File | Purpose |
+| --- | --- |
+| `basicNeck.py` | main script: setup, centre capture, yaw/pitch prompt loop |
+| `initialize.py` | shared helpers: torque, operating mode, profiles, gains, position read, sync write |
+
+> The previous README referred to this script as `head_pitch_yaw_control.py`. The file in the repo is
+> `basicNeck.py`; the old name was wrong.
+
+## Credits
+
+Built for the University of Melbourne MSP humanoid's neck mechanism — the mechanism and the gear train
+are the team's, the control code here is mine. Servo API from
+[ROBOTIS DynamixelSDK](https://github.com/ROBOTIS-GIT/DynamixelSDK) (Apache-2.0). The operating-mode
+name table in `initialize.py` follows the Robotis control-table documentation.
+
+MIT — see `LICENSE`.

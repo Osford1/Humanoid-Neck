@@ -30,7 +30,7 @@ def readOperatingMode(packetHandler, portHandler, DXL_ID, OPERATING_MODE_ADDRESS
     else:
         print("Operating mode value:", operating_mode)      # prints the operating mode
 
-        # Decode the operaeting mode (curtesy of ChatGpt)
+        # Mode names follow the Robotis operating-mode table (0/1/3/4/5/16)
         mode_names = {
             0: "Current Control Mode",
             1: "Velocity Control Mode",
